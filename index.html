@@ -1,559 +1,391 @@
-/**
- * Azoul • Workershild — One-file server (stable)
- * - Pure HTML at "/"
- * - Browser JS served at "/app.js"
- * - JSON APIs at "/api/*"
- */
-
-const express = require('express');
-const cors = require('cors');
-const jwt = require('jsonwebtoken');
-const { nanoid } = require('nanoid');
-const dayjs = require('dayjs');
-require('dotenv').config();
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-// ---------------- Demo Users ----------------
-const users = [
-  { id: 'u_emp_1', email: 'employee1@demo.com', password: 'pass1234', role: 'employee' },
-  { id: 'u_mgr_1', email: 'manager1@demo.com',  password: 'pass1234', role: 'manager'  },
-];
-
-// ---------------- In-memory store ----------------
-const reports = []; // swap to DB later
-const JWT_SECRET = process.env.JWT_SECRET || 'dev_only_secret_change_me';
-
-// ---------------- Helpers ----------------
-function signToken(user) {
-  return jwt.sign(
-    { sub: user.id, email: user.email, role: user.role },
-    JWT_SECRET,
-    { expiresIn: '8h' }
-  );
-}
-
-function requireAuth(opts = {}) {
-  return (req, res, next) => {
-    const hdr = req.headers.authorization || '';
-    const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
-    if (!token) return res.status(401).json({ error: 'Missing token' });
-    try {
-      const payload = jwt.verify(token, JWT_SECRET);
-      if (opts.role && payload.role !== opts.role) return res.status(403).json({ error: 'Forbidden' });
-      req.user = payload;
-      next();
-    } catch {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-  };
-}
-
-// ---------------- APIs (always JSON) ----------------
-app.post('/api/login', (req, res) => {
-  try {
-    const { email, password } = req.body || {};
-    const user = users.find(u => u.email === email && u.password === password);
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-    return res.json({ token: signToken(user), role: user.role, email: user.email });
-  } catch {
-    return res.status(500).json({ error: 'Login error' });
-  }
-});
-
-app.post('/api/reports', requireAuth({ role: 'employee' }), (req, res) => {
-  try {
-    const { category, severity, message, anonymous = true, contact = '' } = req.body || {};
-    if (!category || !severity || !message) {
-      return res.status(400).json({ error: 'category, severity, message are required' });
-    }
-    const now = new Date().toISOString();
-    const report = {
-      id: nanoid(12),
-      createdAt: now,
-      updatedAt: now,
-      category,
-      severity,
-      message,
-      anonymous: !!anonymous,
-      contact: anonymous ? '' : (contact || ''),
-      receiptCode: nanoid(10),
-      status: 'new',
-      assignee: null,
-      managerNotes: [],
-      firstResponseAt: null
-    };
-    reports.push(report);
-    return res.status(201).json({ id: report.id, receiptCode: report.receiptCode });
-  } catch {
-    return res.status(500).json({ error: 'Create error' });
-  }
-});
-
-app.get('/api/reports/track/:receiptCode', (req, res) => {
-  try {
-    const r = reports.find(rep => rep.receiptCode === req.params.receiptCode);
-    if (!r) return res.status(404).json({ error: 'Not found' });
-    return res.json({
-      id: r.id,
-      status: r.status,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-      category: r.category,
-      severity: r.severity
-    });
-  } catch {
-    return res.status(500).json({ error: 'Track error' });
-  }
-});
-
-app.get('/api/reports', requireAuth({ role: 'manager' }), (req, res) => {
-  try {
-    const { status, q, severity } = req.query;
-    let data = reports.slice().sort((a, b) => (b.createdAt.localeCompare(a.createdAt)));
-    if (status) data = data.filter(r => r.status === status);
-    if (severity) data = data.filter(r => r.severity === severity);
-    if (q) {
-      const term = (q || '').toLowerCase();
-      data = data.filter(r =>
-        (r.category || '').toLowerCase().includes(term) ||
-        (r.message || '').toLowerCase().includes(term) ||
-        (r.assignee || '').toLowerCase().includes(term)
-      );
-    }
-    const sanitized = data.map(r => ({ ...r, contact: r.anonymous ? '' : r.contact }));
-    return res.json(sanitized);
-  } catch {
-    return res.status(500).json({ error: 'List error' });
-  }
-});
-
-app.patch('/api/reports/:id', requireAuth({ role: 'manager' }), (req, res) => {
-  try {
-    const r = reports.find(rep => rep.id === req.params.id);
-    if (!r) return res.status(404).json({ error: 'Not found' });
-
-    const { status, assignee, managerNote } = req.body || {};
-    if (status && !['new','in_progress','closed'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status' });
-    }
-
-    if (typeof assignee === 'string') r.assignee = assignee.trim() || null;
-    if (status) {
-      if (!r.firstResponseAt && r.status === 'new' && status !== 'new') {
-        r.firstResponseAt = new Date().toISOString();
-      }
-      r.status = status;
-    }
-    if (managerNote) r.managerNotes.push({ at: new Date().toISOString(), text: managerNote });
-    r.updatedAt = new Date().toISOString();
-
-    return res.json(r);
-  } catch {
-    return res.status(500).json({ error: 'Update error' });
-  }
-});
-
-app.get('/api/metrics', requireAuth({ role: 'manager' }), (req, res) => {
-  try {
-    const total = reports.length;
-    const byStatus = ['new','in_progress','closed'].reduce((acc, s) => {
-      acc[s] = reports.filter(r => r.status === s).length;
-      return acc;
-    }, {});
-    const responded = reports.filter(r => r.firstResponseAt);
-    const avgFirstResponseHrs = responded.length
-      ? responded.reduce((sum, r) => {
-          const diff = dayjs(r.firstResponseAt).diff(dayjs(r.createdAt), 'minute') / 60;
-          return sum + diff;
-        }, 0) / responded.length
-      : 0;
-    const last7Days = reports.filter(r => dayjs(r.createdAt).isAfter(dayjs().subtract(7, 'day'))).length;
-
-    return res.json({
-      total,
-      byStatus,
-      avgFirstResponseHrs: Number(avgFirstResponseHrs.toFixed(2)),
-      last7Days
-    });
-  } catch {
-    return res.status(500).json({ error: 'Metrics error' });
-  }
-});
-
-// ---------------- HTML ----------------
-const HTML = `<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Workershild — Unified Dashboard</title>
-<link rel="preload" href="/app.js" as="script">
-<style>
-  :root{
-    --brand:#0a7abf; --ink:#0b1320; --muted:#64748b;
-    --bg:#f6f8fb; --card:#fff; --line:#e5e7eb; --pill:#e2f2fb; --pillText:#055392;
-  }
-  html,body{height:100%}
-  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;background:var(--bg);color:var(--ink)}
-  header{padding:22px 24px;background:#fff;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
-  header h1{margin:0;font-size:1.25rem;letter-spacing:.2px}
-  main{max-width:1120px;margin:28px auto;padding:0 16px 40px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;margin:0 auto 18px}
-  .row{display:flex;gap:14px;flex-wrap:wrap}
-  label{display:block;font-weight:700;margin:10px 0 6px;font-size:1rem}
-  input,select,textarea{
-    width:100%;padding:14px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;
-    font-size:1rem
-  }
-  textarea{resize:vertical}
-  button{
-    background:var(--brand);color:#fff;border:none;border-radius:10px;padding:12px 18px;cursor:pointer;
-    font-size:1rem;min-width:110px
-  }
-  button:disabled{opacity:.6;cursor:not-allowed}
-  .muted{color:var(--muted);font-size:.95rem}
-  .ok{color:#0a7a2c}.err{color:#b00020}
-  .pill{background:var(--pill);color:var(--pillText);padding:6px 10px;border-radius:999px;font-size:.85rem}
-  table{width:100%;border-collapse:collapse}
-  th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-  th{background:#f1f5f9;font-weight:800}
-  .hide{display:none}
-  .kpi{font-size:1.05rem}
-  .topnote{display:flex;gap:8px;align-items:center}
-  #loginCard{max-width:720px}
-  #employeePanel .card, #managerPanel .card{max-width:1120px}
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Azoul · Workwatch</title>
+  <style>
+    :root{
+      --bg:#0e1a2b;           /* deep blue background */
+      --card:#ffffff;         /* white cards */
+      --text:#0d1b2a;         /* dark text */
+      --muted:#718096;
+      --brand:#2363ff;        /* Azoul blue */
+      --brand-600:#1b4ed9;
+      --brand-100:#e7efff;
+      --ring: rgba(35,99,255,.35);
+      --success:#11a36a;
+      --danger:#e53e3e;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,"Noto Sans",sans-serif;
+      background:linear-gradient(180deg,#0a1530, var(--bg) 30%, #0a1530 100%);
+      color:#f1f5f9;
+    }
+
+    /* Page shell */
+    .wrap{
+      min-height:100dvh;
+      display:flex;
+      flex-direction:column;
+    }
+    header{
+      display:flex;
+      align-items:center;
+      gap:.6rem;
+      padding:16px 20px;
+      border-bottom:1px solid rgba(255,255,255,.06);
+      backdrop-filter:saturate(140%) blur(6px);
+      position:sticky; top:0; z-index:5;
+    }
+    header .dot{
+      width:10px;height:10px;border-radius:50%;
+      background:conic-gradient(from 0deg at 50% 50%, #4da3ff, #7fb5ff, #c6dcff, #4da3ff);
+      box-shadow:0 0 16px rgba(77,163,255,.6);
+    }
+    header .brand{
+      font-weight:700; letter-spacing:.2px;
+    }
+    header .brand small{
+      opacity:.75; font-weight:600; margin-left:.4rem;
+    }
+
+    main{flex:1; display:grid; place-items:center; padding:28px}
+
+    /* Panels */
+    .panel{
+      width:min(880px, 94vw);
+      background:rgba(255,255,255,.06);
+      border:1px solid rgba(255,255,255,.08);
+      border-radius:16px;
+      padding:18px;
+      box-shadow: 0 10px 35px rgba(0,0,0,.35), 0 0 0 8px rgba(255,255,255,.02) inset;
+      backdrop-filter: blur(6px);
+    }
+    .panel-inner{
+      background:#0f1d33;
+      border-radius:12px;
+      padding: clamp(18px, 2.5vw, 28px);
+      border:1px solid rgba(255,255,255,.06);
+    }
+
+    /* Step headers */
+    .h{
+      display:flex; align-items:center; justify-content:space-between; gap:8px;
+      margin-bottom:18px;
+    }
+    .h .t{
+      font-size: clamp(18px, 2.2vw, 22px);
+      font-weight: 700;
+    }
+    .h .sub{
+      color:#c7d2fe; opacity:.8; font-size:14px;
+    }
+
+    /* Form */
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:12px;
+    }
+    @media (max-width:720px){ .grid{ grid-template-columns:1fr } }
+    label{
+      display:block; font-size:13px; color:#dbeafe; margin:4px 0 6px;
+    }
+    .input{
+      width:100%;
+      background: #0b162a;
+      border:1.5px solid rgba(255,255,255,.12);
+      color:#e6edf7;
+      border-radius:10px;
+      padding:12px 12px;
+      outline:none;
+      transition:.2s border,.2s box-shadow;
+    }
+    .input:focus{
+      border-color: var(--brand);
+      box-shadow: 0 0 0 4px var(--ring);
+    }
+    .hint{ color:#9bb2d1; font-size:12px; margin-top:6px }
+
+    .actions{
+      display:flex; gap:10px; align-items:center; justify-content:flex-end;
+      margin-top:14px;
+    }
+    .btn{
+      appearance:none; border:none; cursor:pointer;
+      background:var(--brand); color:white; font-weight:700;
+      padding:12px 16px; border-radius:10px;
+      transition:.2s transform,.2s background,.2s box-shadow;
+      box-shadow: 0 10px 18px rgba(35,99,255,.28);
+    }
+    .btn:hover{ background:var(--brand-600) }
+    .btn:active{ transform: translateY(1px) }
+    .btn.secondary{
+      background:transparent; color:#e2e8f0; border:1px solid rgba(255,255,255,.18);
+      box-shadow:none;
+    }
+
+    /* Cards step */
+    .cards{
+      display:grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap:12px;
+    }
+    @media (max-width:920px){ .cards{ grid-template-columns: repeat(2, 1fr) } }
+    @media (max-width:640px){ .cards{ grid-template-columns: 1fr } }
+
+    .card{
+      background:var(--card);
+      color:var(--text);
+      border:1px solid #e6eaf2;
+      border-radius:14px;
+      padding:14px;
+      display:flex; gap:12px; align-items:flex-start;
+      cursor:pointer;
+      transition: .18s transform, .18s box-shadow, .18s border-color;
+      box-shadow: 0 6px 16px rgba(8,15,30,.1);
+      user-select:none;
+    }
+    .card:hover{ transform: translateY(-1px) }
+    .card.selected{
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px var(--brand-100);
+    }
+    .ic{
+      width:36px; height:36px; flex:0 0 36px; border-radius:10px;
+      display:grid; place-items:center;
+      background:#eef3ff; color:#2746cf; font-weight:900;
+    }
+    .ctitle{ font-weight:800; margin-bottom:4px }
+    .cdesc{ color:#344; opacity:.9; font-size:13.5px }
+
+    .other{
+      margin-top:10px;
+      background:white; border:1px dashed #cbd5e1; border-radius:12px; padding:12px;
+    }
+    .pill{
+      display:inline-flex; align-items:center; gap:8px;
+      background:#eef2ff; color:#29304a;
+      border:1px solid #ccd6ff; padding:8px 12px; border-radius:999px;
+      font-weight:700; font-size:13px;
+    }
+    .savebar{
+      display:flex; justify-content:space-between; align-items:center; gap:10px;
+      margin-top:16px;
+    }
+    .small{ font-size:12px; color:#7b8aa6 }
+
+    /* Toast */
+    .toast{
+      position: fixed; bottom:18px; right:18px;
+      background:#0b162a; color:#e7f1ff; border:1px solid rgba(255,255,255,.12);
+      border-radius:12px; padding:12px 14px; box-shadow:0 10px 28px rgba(0,0,0,.35);
+      display:none; z-index:10;
+    }
+
+    /* Hideable sections */
+    .hidden{ display:none !important }
+  </style>
 </head>
 <body>
-<header>
-  <h1>Azoul • Workershild</h1>
-  <div id="userBox" class="muted">Not signed in</div>
-</header>
+  <div class="wrap">
 
-<main>
-  <section class="card" id="loginCard">
-    <h2 style="margin:0 0 6px 0;text-align:center">Sign in</h2>
-    <div class="row" style="justify-content:center">
-      <div style="flex:1;min-width:260px;max-width:320px">
-        <label>Email</label>
-        <input id="email" value="employee1@demo.com" />
-      </div>
-      <div style="flex:1;min-width:260px;max-width:320px">
-        <label>Password</label>
-        <input id="password" type="password" value="pass1234" />
-      </div>
-      <div style="align-self:flex-end">
-        <button id="loginBtn">Login</button>
-      </div>
-    </div>
-    <div id="loginMsg" class="muted" style="margin-top:10px;text-align:center"></div>
-    <div class="muted" style="margin-top:10px;text-align:center">
-      Demo accounts: <b>employee1@demo.com / pass1234</b> • <b>manager1@demo.com / pass1234</b>
-    </div>
-  </section>
+    <header>
+      <span class="dot" aria-hidden="true"></span>
+      <div class="brand">Azoul <small>Workwatch</small></div>
+    </header>
 
-  <section id="employeePanel" class="hide">
-    <div class="card topnote" style="max-width:720px">
-      <h3 style="margin:0">Employee</h3>
-      <span class="pill">Anonymous by default</span>
-    </div>
+    <main>
+      <section class="panel" id="step1-panel">
+        <div class="panel-inner">
+          <div class="h">
+            <div>
+              <div class="t">Sign in to begin</div>
+              <div class="sub">Enter your email and your team/group (or type <b>N/A</b>).</div>
+            </div>
+          </div>
 
-    <div class="card">
-      <h3>Submit a concern</h3>
-      <div class="row">
-        <div style="flex:1;min-width:200px">
-          <label>Category</label>
-          <select id="e_category">
-            <option>Safety</option><option>Harassment</option>
-            <option>Scheduling</option><option>Pay/HR</option><option>Other</option>
-          </select>
+          <form id="introForm" novalidate>
+            <div class="grid">
+              <div>
+                <label for="email">Email</label>
+                <input class="input" id="email" name="email" type="email" placeholder="you@example.com" required />
+                <div class="hint">We only use this to save your selections.</div>
+              </div>
+              <div>
+                <label for="team">Team / Group</label>
+                <input class="input" id="team" name="team" type="text" placeholder="Marketing, Support, Engineering… or N/A" />
+                <div class="hint">If you don’t have one, write <b>N/A</b>.</div>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="submit" class="btn" id="continueBtn">Continue</button>
+            </div>
+          </form>
         </div>
-        <div style="flex:1;min-width:200px">
-          <label>Severity</label>
-          <select id="e_severity">
-            <option>low</option><option>medium</option><option>high</option>
-          </select>
+      </section>
+
+      <section class="panel hidden" id="step2-panel" aria-hidden="true">
+        <div class="panel-inner">
+          <div class="h">
+            <div>
+              <div class="t">What’s affecting you?</div>
+              <div class="sub">Choose all that apply. You can add your own under “Other”.</div>
+            </div>
+            <div class="pill" id="whoPill" title="Signed in user">👤 <span id="whoText">—</span></div>
+          </div>
+
+          <div class="cards" id="cards"></div>
+
+          <div class="other">
+            <label for="otherText"><b>Other</b> (optional)</label>
+            <input class="input" id="otherText" type="text" placeholder="Type another issue…" />
+          </div>
+
+          <div class="savebar">
+            <div class="small" id="selCount">0 selected</div>
+            <div class="actions">
+              <button class="btn secondary" id="backBtn">Back</button>
+              <button class="btn" id="saveBtn">Save</button>
+            </div>
+          </div>
         </div>
-      </div>
-      <label>Message</label>
-      <textarea id="e_message" rows="6" placeholder="Describe what happened..."></textarea>
-      <div class="row" style="align-items:center">
-        <div>
-          <input type="checkbox" id="e_anonymous" checked />
-          <label for="e_anonymous" style="display:inline;font-weight:600">Submit anonymously</label>
-        </div>
-        <div style="flex:1;min-width:260px">
-          <label>Contact (optional if not anonymous)</label>
-          <input id="e_contact" placeholder="phone/email (optional)" />
-        </div>
-        <div><button id="e_submit">Send</button></div>
-      </div>
-      <div id="e_submitMsg" class="muted" style="margin-top:8px"></div>
-    </div>
+      </section>
+    </main>
 
-    <div class="card" style="max-width:720px">
-      <h3>Track a report</h3>
-      <div class="row">
-        <div style="flex:1;min-width:220px">
-          <label>Receipt code</label>
-          <input id="e_receipt" placeholder="e.g., 8Ksd2Yx3Qp" />
-        </div>
-        <div style="align-self:flex-end"><button id="e_track">Track</button></div>
-      </div>
-      <div id="e_trackBox" style="margin-top:10px"></div>
-    </div>
-  </section>
+    <div class="toast" id="toast">Saved ✔</div>
+  </div>
 
-  <section id="managerPanel" class="hide">
-    <div class="card topnote" style="max-width:720px">
-      <h3 style="margin:0">Manager</h3>
-      <span class="pill">Audit‑ready & privacy‑safe</span>
-    </div>
-
-    <div class="card" id="m_metrics">
-      <h3>Metrics (live)</h3>
-      <div class="row">
-        <div class="kpi"><b>Total:</b> <span id="k_total">0</span></div>
-        <div class="kpi"><b>New:</b> <span id="k_new">0</span></div>
-        <div class="kpi"><b>In progress:</b> <span id="k_inp">0</span></div>
-        <div class="kpi"><b>Closed:</b> <span id="k_closed">0</span></div>
-        <div class="kpi"><b>Avg first response (hrs):</b> <span id="k_avg">0</span></div>
-        <div class="kpi"><b>Last 7 days:</b> <span id="k_last7">0</span></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Queue</h3>
-      <div class="row">
-        <div style="flex:1;min-width:160px">
-          <label>Status</label>
-          <select id="f_status">
-            <option value="">(any)</option><option>new</option><option>in_progress</option><option>closed</option>
-          </select>
-        </div>
-        <div style="flex:1;min-width:160px">
-          <label>Severity</label>
-          <select id="f_sev">
-            <option value="">(any)</option><option>low</option><option>medium</option><option>high</option>
-          </select>
-        </div>
-        <div style="flex:2;min-width:220px">
-          <label>Search</label>
-          <input id="f_q" placeholder="category, message, assignee..." />
-        </div>
-        <div>
-          <button id="applyBtn">Apply</button>
-          <button id="clearBtn" style="background:#64748b">Clear</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <table id="tbl">
-        <thead>
-          <tr><th>Created</th><th>Status</th><th>Category / Severity</th><th>Message</th><th>Assignee</th><th>Actions</th></tr>
-        </thead>
-        <tbody id="tbody"></tbody>
-      </table>
-    </div>
-  </section>
-</main>
-
-<script src="/app.js" defer></script>
-</body>
-</html>`;
-
-// ---------------- Client JS (served separately to avoid template-string issues) ----------------
-const APP_JS = `
-const API = location.origin + '/api';
-let token = null;
-let userRole = null;
-function el(id){return document.getElementById(id)}
-function show(id){el(id).classList.remove('hide')}
-function hide(id){el(id).classList.add('hide')}
-
-function setUser(email, role){
-  userRole = role;
-  el('userBox').innerHTML = 'Signed in as <b>' + email + '</b> <span class="pill">' + role + '</span>';
-  hide('loginCard');
-  if(role === 'employee'){ show('employeePanel'); hide('managerPanel'); }
-  else if(role === 'manager'){ show('managerPanel'); hide('employeePanel'); refreshManager(); }
-}
-
-async function safeJson(resp){
-  const text = await resp.text();
-  try { return { ok:true, data: JSON.parse(text) }; }
-  catch { return { ok:false, errorText: text.slice(0,200) || 'Non-JSON response' }; }
-}
-
-el('loginBtn').onclick = async ()=>{
-  el('loginBtn').disabled = true;
-  el('loginMsg').textContent = 'Signing in...';
-  try{
-    const r = await fetch(API + '/login', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ email: el('email').value.trim(), password: el('password').value })
-    });
-    const parsed = await safeJson(r);
-    if(!r.ok || !parsed.ok){
-      const msg = parsed.ok ? (parsed.data.error || 'Login failed') :
-        'Login failed: server returned non-JSON (check server & /api prefix).';
-      throw new Error(msg);
-    }
-    token = parsed.data.token;
-    setUser(parsed.data.email, parsed.data.role);
-  }catch(e){
-    el('loginMsg').innerHTML = '<span class="err">' + e.message + '</span>';
-  }finally{
-    el('loginBtn').disabled = false;
-  }
-};
-
-// Employee submit
-el('e_submit').onclick = async ()=>{
-  if(!token || userRole!=='employee'){ alert('Please login as employee.'); return; }
-  const anonymous = el('e_anonymous').checked;
-  const payload = {
-    category: el('e_category').value,
-    severity: el('e_severity').value,
-    message: el('e_message').value.trim(),
-    anonymous,
-    contact: anonymous ? '' : el('e_contact').value.trim()
-  };
-  el('e_submit').disabled = true;
-  el('e_submitMsg').textContent = 'Submitting...';
-  try{
-    const r = await fetch(API + '/reports', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body: JSON.stringify(payload)
-    });
-    const parsed = await safeJson(r);
-    if(!r.ok || !parsed.ok){
-      throw new Error(parsed.ok ? (parsed.data.error || 'Submit failed') : 'Submit failed: non-JSON response');
-    }
-    el('e_submitMsg').innerHTML = 'Received. Your <b>receipt code</b> is <span class="pill">' + parsed.data.receiptCode + '</span>. Keep it to track status.';
-    el('e_message').value=''; el('e_contact').value='';
-  }catch(e){ el('e_submitMsg').innerHTML = '<span class="err">' + e.message + '</span>'; }
-  finally{ el('e_submit').disabled = false; }
-};
-
-// Employee track
-el('e_track').onclick = async ()=>{
-  const rc = el('e_receipt').value.trim(); if(!rc) return;
-  el('e_trackBox').textContent = 'Looking up...';
-  try{
-    const r = await fetch(API + '/reports/track/' + encodeURIComponent(rc));
-    const parsed = await safeJson(r);
-    if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error || 'Not found') : 'Track failed: non-JSON'); }
-    const d = parsed.data;
-    el('e_trackBox').innerHTML =
-      '<div class="card"><div><b>ID:</b> ' + d.id + '</div>' +
-      '<div><b>Status:</b> <span class="pill">'ated: ' + new Date(d.createdAt).toLocaleString() + '</div>' +
-      '<div class="muted">Updated: ' + new Date(d.updatedAt).toLocaleString() + '</div>' +
-      '<div class="muted">Category: ' + d.category + ' • Severity: ' + d.severity + '</div></div>';
-  }catch(e){ el('e_trackBox').innerHTML = '<span class="err">' + e.message + '</span>'; }
-};
-
-// Manager
-async function refreshManager(){ await Promise.all([loadMetrics(), loadQueue()]) }
-async function loadMetrics(){
-  const r = await fetch(API + '/metrics', { headers:{Authorization:'Bearer '+token}});
-  const parsed = await safeJson(r);
-  if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error||'metrics error') : 'metrics error: non-JSON'); }
-  const m = parsed.data;
-  el('k_total').textContent = m.total; el('k_new').textContent = m.byStatus.new;
-  el('k_inp').textContent   = m.byStatus.in_progress; el('k_closed').textContent = m.byStatus.closed;
-  el('k_avg').textContent   = m.avgFirstResponseHrs;  el('k_last7').textContent = m.last7Days;
-}
-async function loadQueue(){
-  const p = new URLSearchParams();
-  if(el('f_status').value) p.set('status', el('f_status').value);
-  if(el('f_sev').value)    p.set('severity', el('f_sev').value);
-  if(el('f_q').value)      p.set('q', el('f_q').value.trim());
-  const r = await fetch(API + '/reports?' + p.toString(), { headers:{Authorization:'Bearer '+token}});
-  const parsed = await safeJson(r);
-  if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error||'queue error') : 'queue error: non-JSON'); }
-  renderRows(parsed.data);
-}
-function renderRows(rows){
-  const tbody = document.getElementById('tbody'); tbody.innerHTML = '';
-  for(const r of rows){
-    const tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td>' + new Date(r.createdAt).toLocaleString() + '</td>' +
-      '<td><span class="pill">' + r.status + '</span></td>' +
-      '<td><div><b>' + escapeHtml(r.category) + '</b></div><div>' + escapeHtml(r.severity) + '</div></td>' +
-      '<td>' + escapeHtml(r.message).slice(0,280) + (r.message.length>280?'…':'') + '</td>' +
-      '<td>' + (r.assignee || '<span class="pill">unassigned</span>') + '</td>' +
-      '<td><div style="display:flex;gap:6px;flex-wrap:wrap">' +
-        '<select data-act="status" data-id="'+r.id+'">' +
-          '<option value="">set status…</option><option>new</option><option>in_progress</option><option>closed</option>' +
-        '</select>' +
-        '<input data-act="assignee" data-id="'+r.id+'" placeholder="assignee" style="width:140px"/>' +
-        '<input data-act="note" data-id="'+r.id+'" placeholder="add note…" style="width:180px"/>' +
-        '<button data-act="save" data-id="'+r.id+'">Save</button>' +
-      '</div></td>';
-    tbody.appendChild(tr);
-  }
-  tbody.querySelectorAll('button[data-act="save"]').forEach(btn=>{
-    btn.onclick = async ()=>{
-      const id = btn.dataset.id, row = btn.closest('tr');
-      const statusSel = row.querySelector('select[data-act="status"]');
-      const assignee  = row.querySelector('input[data-act="assignee"]').value.trim();
-      const note      = row.querySelector('input[data-act="note"]').value.trim();
-      const payload = {};
-      if(statusSel.value) payload.status = statusSel.value;
-      if(assignee) payload.assignee = assignee;
-      if(note) payload.managerNote = note;
-      btn.disabled = true;
-      try{
-        const r = await fetch(API + '/reports/' + id, {
-          method:'PATCH',
-          headers:{'Content-Type':'application/json', Authorization:'Bearer '+token},
-          body: JSON.stringify(payload)
-        });
-        const parsed = await safeJson(r);
-        if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error||'update error') : 'update error: non-JSON'); }
-        await refreshManager();
-      }catch(e){ alert(e.message) } finally{ btn.disabled=false }
+  <script>
+    // ---------- Utilities ----------
+    const $ = (s, r=document) => r.querySelector(s);
+    const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+    const toast = (msg) => {
+      const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
+      setTimeout(()=> t.style.display='none', 1600);
     };
-  });
-}
-function escapeHtml(s){
-  return String(s||'').replace(/[&<>\"']/g, function(ch){
-    return ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;','\\'':'&#39;'}[ch]);
-  });
-}
-document.getElementById('applyBtn')?.addEventListener('click', loadQueue);
-document.getElementById('clearBtn')?.addEventListener('click', ()=>{
-  document.getElementById('f_status').value='';
-  document.getElementById('f_sev').value='';
-  document.getElementById('f_q').value='';
-  loadQueue();
-});
-`;
 
-// ---------------- Routes ----------------
-app.get('/', (req, res) => {
-  res.type('html').send(HTML);
-});
+    // ---------- Step 1 (Sign-in) ----------
+    const form = $('#introForm');
+    const step1 = $('#step1-panel');
+    const step2 = $('#step2-panel');
+    const whoText = $('#whoText');
 
-app.get('/app.js', (req, res) => {
-  res.type('application/javascript').send(APP_JS);
-});
+    form.addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const email = $('#email').value.trim();
+      const team = $('#team').value.trim() || 'N/A';
 
-// Fallback: any non-API path returns the app (handy on some hosts)
-app.get(/^\/(?!api).+/, (req, res) => {
-  res.type('html').send(HTML);
-});
+      // simple email check (not strict)
+      const ok = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      if(!ok){
+        $('#email').focus();
+        toast('Please enter a valid email.');
+        return;
+      }
+      // Persist identity (local only; replace with backend as needed)
+      localStorage.setItem('azoul_user', JSON.stringify({email, team, at: Date.now()}));
 
-// ---------------- Start ----------------
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`Workershild (one-file, stable) on http://localhost:${PORT}`);
-});
+      whoText.textContent = `${email} · ${team}`;
+      step1.classList.add('hidden');
+      step2.classList.remove('hidden');
+      step2.setAttribute('aria-hidden','false');
+    });
+
+    $('#backBtn').addEventListener('click', ()=>{
+      step2.classList.add('hidden');
+      step1.classList.remove('hidden');
+      step2.setAttribute('aria-hidden','true');
+    });
+
+    // ---------- Cards ----------
+    const issues = [
+      { id:'low-pay',     icon:'💸', title:'Low Pay',       desc:'Compensation feels below market or role expectations.' },
+      { id:'harassment',  icon:'🚫', title:'Harassment',    desc:'Unwelcome behavior, bullying, or discrimination.' },
+      { id:'burnout',     icon:'⚠️', title:'Burnout',       desc:'Exhaustion, overload, or chronic stress.' },
+      { id:'overtime',    icon:'⏱️', title:'Overtime',      desc:'Regular unpaid/expected overtime or on-call.' },
+      { id:'safety',      icon:'🛡️', title:'Safety',        desc:'Physical/psychological safety concerns at work.' },
+      { id:'management',  icon:'📉', title:'Management',     desc:'Poor leadership, unclear direction, favoritism.' },
+      { id:'career',      icon:'🪜', title:'Career Growth',  desc:'Limited advancement or skill development.' },
+      { id:'benefits',    icon:'🎁', title:'Benefits',       desc:'Health, PTO, or other benefits lacking.' },
+      { id:'culture',     icon:'🏢', title:'Culture',        desc:'Toxic dynamics, exclusion, or low trust.' }
+    ];
+
+    const cardsWrap = $('#cards');
+    const selections = new Set();
+    const renderCards = () => {
+      cardsWrap.innerHTML = '';
+      issues.forEach(x=>{
+        const div = document.createElement('button');
+        div.type = 'button';
+        div.className = 'card';
+        div.setAttribute('data-id', x.id);
+        div.innerHTML = `
+          <div class="ic" aria-hidden="true">${x.icon}</div>
+          <div>
+            <div class="ctitle">${x.title}</div>
+            <div class="cdesc">${x.desc}</div>
+          </div>
+        `;
+        div.addEventListener('click', ()=>{
+          const id = x.id;
+          if(selections.has(id)){ selections.delete(id); div.classList.remove('selected'); }
+          else { selections.add(id); div.classList.add('selected'); }
+          updateCount();
+        });
+        cardsWrap.appendChild(div);
+      });
+    };
+    renderCards();
+
+    const updateCount = ()=> $('#selCount').textContent = `${selections.size} selected`;
+
+    // ---------- Save ----------
+    $('#saveBtn').addEventListener('click', ()=>{
+      const who = JSON.parse(localStorage.getItem('azoul_user')||'{}');
+      const other = $('#otherText').value.trim();
+      const payload = {
+        user: who,
+        selections: Array.from(selections),
+        other: other || null,
+        savedAt: new Date().toISOString()
+      };
+
+      // Local-only persistence (replace with fetch(...) to your backend)
+      const all = JSON.parse(localStorage.getItem('azoul_reports')||'[]');
+      all.push(payload);
+      localStorage.setItem('azoul_reports', JSON.stringify(all));
+
+      toast('Saved ✔');
+      // Optional: clear selection
+      selections.clear(); $$('.card').forEach(c=>c.classList.remove('selected'));
+      $('#otherText').value = '';
+      updateCount();
+    });
+
+    // ---------- Safety: Hide accidental "code at top" ----------
+    // If some server accidentally prints raw code into a #debug or .dump element, remove it.
+    // This prevents that "codes at the top" problem without touching your backend.
+    window.addEventListener('DOMContentLoaded', ()=>{
+      const junkSelectors = ['#debug','#dump','.raw','.codesat','.code-dump','pre.dump','pre.raw'];
+      junkSelectors.forEach(sel => $$(sel).forEach(n=> n.remove()));
+      updateCount();
+
+      // If user already signed before, auto-fill
+      try{
+        const who = JSON.parse(localStorage.getItem('azoul_user')||'{}');
+        if(who.email){
+          $('#email').value = who.email;
+          $('#team').value = who.team || '';
+          whoText.textContent = `${who.email} · ${who.team||'N/A'}`;
+        }
+      }catch{}
+    });
+  </script>
+</body>
+</html>
