@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Workershild — Unified Dashboard</title>
+<style>
+  :root{
+    --brand:#0a7abf; --ink:#0b1320; --muted:#64748b;
+    --bg:#f8fafc; --card:#fff; --line:#e5e7eb; --pill:#e2f2fb; --pillText:#055392;
+  }
+  html,body{height:100%}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  header{padding:18px 22px;background:#fff;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  header h1{margin:0;font-size:1.1rem}
+  .tag{background:var(--pill);color:var(--pillText);padding:4px 8px;border-radius:999px;font-size:.75rem;margin-left:8px}
+  main{max-width:1100px;margin:18px auto;padding:0 16px 40px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:0 0 16px}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  label{display:block;font-weight:600;margin:8px 0 6px}
+  input,select,textarea{width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}
+  textarea{resize:vertical}
+  button{background:var(--brand);color:#fff;border:none;border-radius:8px;padding:10px 14px;cursor:pointer}
+  button:disabled{opacity:.6;cursor:not-allowed}
+  .muted{color:var(--muted);font-size:.92rem}
+  .ok{color:#0a7a2c}.err{color:#b00020}
+  .pill{background:var(--pill);color:var(--pillText);padding:3px 8px;border-radius:999px;font-size:.78rem}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:#f1f5f9;font-weight:700}
+  .hide{display:none}
+  .kpi{font-size:1.05rem}
+  .topnote{display:flex;gap:8px;align-items:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>Azoul • Workershild <span class="tag">$4 / employee / month</span></h1>
+  <div id="userBox" class="muted">Not signed in</div>
+</header>
+
+<main>
+
+  <!-- Login -->
+  <section class="card" id="loginCard">
+    <h3>Sign in</h3>
+    <div class="row">
+      <div style="flex:1;min-width:240px">
+        <label>Email</label>
+        <input id="email" value="employee1@demo.com" />
+      </div>
+      <div style="flex:1;min-width:200px">
+        <label>Password</label>
+        <input id="password" type="password" value="pass1234" />
+      </div>
+      <div style="align-self:flex-end">
+        <button id="loginBtn">Login</button>
+      </div>
+    </div>
+    <div id="loginMsg" class="muted" style="margin-top:8px"></div>
+    <div class="muted" style="margin-top:6px">
+      Demo accounts: <b>employee1@demo.com / pass1234</b> • <b>manager1@demo.com / pass1234</b>
+    </div>
+  </section>
+
+  <!-- Employee Panel -->
+  <section id="employeePanel" class="hide">
+    <div class="card topnote">
+      <h3 style="margin:0">Employee</h3>
+      <span class="pill">Anonymous by default</span>
+    </div>
+
+    <div class="card">
+      <h3>Submit a concern</h3>
+      <div class="row">
+        <div style="flex:1;min-width:200px">
+          <label>Category</label>
+          <select id="e_category">
+            <option>Safety</option><option>Harassment</option>
+            <option>Scheduling</option><option>Pay/HR</option><option>Other</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label>Severity</label>
+          <select id="e_severity">
+            <option>low</option><option>medium</option><option>high</option>
+          </select>
+        </div>
+      </div>
+      <label>Message</label>
+      <textarea id="e_message" rows="5" placeholder="Describe what happened..."></textarea>
+      <div class="row" style="align-items:center">
+        <div>
+          <input type="checkbox" id="e_anonymous" checked />
+          <label for="e_anonymous" style="display:inline;font-weight:500">Submit anonymously</label>
+        </div>
+        <div style="flex:1;min-width:260px">
+          <label>Contact (optional if not anonymous)</label>
+          <input id="e_contact" placeholder="phone/email (optional)" />
+        </div>
+        <div>
+          <button id="e_submit">Send</button>
+        </div>
+      </div>
+      <div id="e_submitMsg" class="muted" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <h3>Track a report</h3>
+      <div class="row">
+        <div style="flex:1;min-width:220px">
+          <label>Receipt code</label>
+          <input id="e_receipt" placeholder="e.g., 8Ksd2Yx3Qp" />
+        </div>
+        <div style="align-self:flex-end"><button id="e_track">Track</button></div>
+      </div>
+      <div id="e_trackBox" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- Manager Panel -->
+  <section id="managerPanel" class="hide">
+    <div class="card topnote">
+      <h3 style="margin:0">Manager</h3>
+      <span class="pill">Audit‑ready & privacy‑safe</span>
+    </div>
+
+    <div class="card" id="m_metrics">
+      <h3>Metrics (live)</h3>
+      <div class="row">
+        <div class="kpi"><b>Total:</b> <span id="k_total">0</span></div>
+        <div class="kpi"><b>New:</b> <span id="k_new">0</span></div>
+        <div class="kpi"><b>In progress:</b> <span id="k_inp">0</span></div>
+        <div class="kpi"><b>Closed:</b> <span id="k_closed">0</span></div>
+        <div class="kpi"><b>Avg first response (hrs):</b> <span id="k_avg">0</span></div>
+        <div class="kpi"><b>Last 7 days:</b> <span id="k_last7">0</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Queue</h3>
+      <div class="row">
+        <div style="flex:1;min-width:160px">
+          <label>Status</label>
+          <select id="f_status">
+            <option value="">(any)</option><option>new</option><option>in_progress</option><option>closed</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:160px">
+          <label>Severity</label>
+          <select id="f_sev">
+            <option value="">(any)</option><option>low</option><option>medium</option><option>high</option>
+          </select>
+        </div>
+        <div style="flex:2;min-width:220px">
+          <label>Search</label>
+          <input id="f_q" placeholder="category, message, assignee..." />
+        </div>
+        <div>
+          <button id="applyBtn">Apply</button>
+          <button id="clearBtn" style="background:#64748b">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th>Created</th><th>Status</th><th>Category / Severity</th>
+            <th>Message</th><th>Assignee</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<script>
+const API = location.origin + '/api';
+let token = null;
+let userRole = null;
+function el(id){return document.getElementById(id)}
+function show(id){el(id).classList.remove('hide')}
+function hide(id){el(id).classList.add('hide')}
+
+function setUser(email, role){
+  userRole = role;
+  el('userBox').innerHTML = `Signed in as <b>${email}</b> <span class="tag">${role}</span>`;
+  hide('loginCard');
+  if(role === 'employee'){ show('employeePanel'); hide('managerPanel'); }
+  else if(role === 'manager'){ show('managerPanel'); hide('employeePanel'); refreshManager(); }
+}
+
+el('loginBtn').onclick = async ()=>{
+  el('loginBtn').disabled = true;
+  el('loginMsg').textContent = 'Signing in...';
+  try{
+    const r = await fetch(API + '/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email: el('email').value.trim(), password: el('password').value })
+    });
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || 'Login failed');
+    token = data.token;
+    setUser(data.email, data.role);
+  }catch(e){
+    el('loginMsg').innerHTML = '<span class="err">'+e.message+'</span>';
+  }finally{ el('loginBtn').disabled = false; }
+};
+
+// ============ EMPLOYEE ============
+el('e_submit').onclick = async ()=>{
+  if(!token || userRole!=='employee'){ alert('Please login as employee.'); return; }
+  const anonymous = el('e_anonymous').checked;
+  const payload = {
+    category: el('e_category').value,
+    severity: el('e_severity').value,
+    message: el('e_message').value.trim(),
+    anonymous,
+    contact: anonymous ? '' : el('e_contact').value.trim()
+  };
+  el('e_submit').disabled = true;
+  el('e_submitMsg').textContent = 'Submitting...';
+  try{
+    const r = await fetch(API + '/reports', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || 'Submit failed');
+    el('e_submitMsg').innerHTML = `Received. Your <b>receipt code</b> is <span class="pill">${data.receiptCode}</span>. Keep it to track status.`;
+    el('e_message').value=''; el('e_contact').value='';
+  }catch(e){ el('e_submitMsg').innerHTML = '<span class="err">'+e.message+'</span>'; }
+  finally{ el('e_submit').disabled = false; }
+};
+
+el('e_track').onclick = async ()=>{
+  const rc = el('e_receipt').value.trim(); if(!rc) return;
+  el('e_trackBox').textContent = 'Looking up...';
+  try{
+    const r = await fetch(API + '/reports/track/' + encodeURIComponent(rc));
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || 'Not found');
+    el('e_trackBox').innerHTML =
+      `<div class="card"><div><b>ID:</b> ${data.id}</div>
+       <div><b>Status:</b> <span class="pill">${data.status}</span></div>
+       <div class="muted">Created: ${new Date(data.createdAt).toLocaleString()}</div>
+       <div class="muted">Updated: ${new Date(data.updatedAt).toLocaleString()}</div>
+       <div class="muted">Category: ${data.category} • Severity: ${data.severity}</div></div>`;
+  }catch(e){ el('e_trackBox').innerHTML = '<span class="err">'+e.message+'</span>'; }
+};
+
+// ============ MANAGER ============
+async function refreshManager(){ await Promise.all([loadMetrics(), loadQueue()]) }
+
+async function loadMetrics(){
+  const r = await fetch(API + '/metrics', { headers:{Authorization:'Bearer '+token}});
+  const m = await r.json(); if(!r.ok) throw new Error(m.error||'metrics error');
+  el('k_total').textContent = m.total; el('k_new').textContent = m.byStatus.new;
+  el('k_inp').textContent   = m.byStatus.in_progress; el('k_closed').textContent = m.byStatus.closed;
+  el('k_avg').textContent   = m.avgFirstResponseHrs;  el('k_last7').textContent = m.last7Days;
+}
+
+async function loadQueue(){
+  const p = new URLSearchParams();
+  if(el('f_status').value) p.set('status', el('f_status').value);
+  if(el('f_sev').value)    p.set('severity', el('f_sev').value);
+  if(el('f_q').value)      p.set('q', el('f_q').value.trim());
+  const r = await fetch(API + '/reports?' + p.toString(), { headers:{Authorization:'Bearer '+token}});
+  const rows = await r.json(); if(!r.ok) throw new Error(rows.error||'queue error');
+  renderRows(rows);
+}
+
+function renderRows(rows){
+  const tbody = el('tbody'); tbody.innerHTML = '';
+  for(const r of rows){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${new Date(r.createdAt).toLocaleString()}</td>
+      <td><span class="pill">${r.status}</span></td>
+      <td><div><b>${r.category}</b></div><div>${r.severity}</div></td>
+      <td>${escapeHtml(r.message).slice(0,280)}${r.message.length>280?'…':''}</td>
+      <td>${r.assignee || '<span class="pill">unassigned</span>'}</td>
+      <td>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <select data-act="status" data-id="${r.id}">
+            <option value="">set status…</option><option>new</option><option>in_progress</option><option>closed</option>
+          </select>
+          <input data-act="assignee" data-id="${r.id}" placeholder="assignee" style="width:120px"/>
+          <input data-act="note" data-id="${r.id}" placeholder="add note…" style="width:160px"/>
+          <button data-act="save" data-id="${r.id}">Save</button>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll('button[data-act="save"]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const id = btn.dataset.id, row = btn.closest('tr');
+      const statusSel = row.querySelector('select[data-act="status"]');
+      const assignee  = row.querySelector('input[data-act="assignee"]').value.trim();
+      const note      = row.querySelector('input[data-act="note"]').value.trim();
+      const payload = {};
+      if(statusSel.value) payload.status = statusSel.value;
+      if(assignee) payload.assignee = assignee;
+      if(note) payload.managerNote = note;
+      btn.disabled = true;
+      try{
+        const r = await fetch(API + '/reports/' + id, {
+          method:'PATCH',
+          headers:{'Content-Type':'application/json', Authorization:'Bearer '+token},
+          body: JSON.stringify(payload)
+        });
+        const data = await r.json(); if(!r.ok) throw new Error(data.error||'update error');
+        await refreshManager();
+      }catch(e){ alert(e.message) } finally{ btn.disabled=false }
+    }
+  })
+}
+
+el('applyBtn')?.addEventListener('click', loadQueue);
+el('clearBtn')?.addEventListener('click', ()=>{ el('f_status').value=''; el('f_sev').value=''; el('f_q').value=''; loadQueue(); });
+
+function escapeHtml(s){ return s.replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) }
+</script>
+</body>
+</html>
