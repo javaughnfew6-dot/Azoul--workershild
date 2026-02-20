@@ -1,15 +1,8 @@
 /**
- * Azoul • Workershild — One-file Server
- * - Unified dashboard (employee + manager) served at "/"
- * - API under "/api/*"
- * - In-memory store (swap to a DB in prod)
- *
- * Quickstart:
- *   npm init -y
- *   npm i express cors jsonwebtoken nanoid dayjs dotenv
- *   echo "JWT_SECRET=change_me" > .env   # optional (uses fallback if missing)
- *   node server.js
- *   http://localhost:4000
+ * Azoul • Workershild — One-file server (stable)
+ * - Pure HTML at "/"
+ * - Browser JS served at "/app.js"
+ * - JSON APIs at "/api/*"
  */
 
 const express = require('express');
@@ -17,33 +10,23 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { nanoid } = require('nanoid');
 const dayjs = require('dayjs');
-const path = require('path');
 require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ---------- Demo Users (replace with real IdP later) ----------
+// ---------------- Demo Users ----------------
 const users = [
   { id: 'u_emp_1', email: 'employee1@demo.com', password: 'pass1234', role: 'employee' },
   { id: 'u_mgr_1', email: 'manager1@demo.com',  password: 'pass1234', role: 'manager'  },
 ];
 
-// ---------- In-memory Reports ----------
-/**
- * report = {
- *   id, createdAt, updatedAt,
- *   category, severity, message, anonymous, contact,
- *   receiptCode, status, assignee, managerNotes: [],
- *   firstResponseAt
- * }
- */
-const reports = [];
-
+// ---------------- In-memory store ----------------
+const reports = []; // swap to DB later
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_only_secret_change_me';
 
-// ---------- Helpers ----------
+// ---------------- Helpers ----------------
 function signToken(user) {
   return jwt.sign(
     { sub: user.id, email: user.email, role: user.role },
@@ -59,25 +42,23 @@ function requireAuth(opts = {}) {
     if (!token) return res.status(401).json({ error: 'Missing token' });
     try {
       const payload = jwt.verify(token, JWT_SECRET);
+      if (opts.role && payload.role !== opts.role) return res.status(403).json({ error: 'Forbidden' });
       req.user = payload;
-      if (opts.role && payload.role !== opts.role) {
-        return res.status(403).json({ error: 'Forbidden' });
-      }
       next();
-    } catch (e) {
+    } catch {
       return res.status(401).json({ error: 'Invalid token' });
     }
   };
 }
 
-// ---------- API ----------
+// ---------------- APIs (always JSON) ----------------
 app.post('/api/login', (req, res) => {
   try {
     const { email, password } = req.body || {};
     const user = users.find(u => u.email === email && u.password === password);
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
     return res.json({ token: signToken(user), role: user.role, email: user.email });
-  } catch (e) {
+  } catch {
     return res.status(500).json({ error: 'Login error' });
   }
 });
@@ -89,7 +70,6 @@ app.post('/api/reports', requireAuth({ role: 'employee' }), (req, res) => {
       return res.status(400).json({ error: 'category, severity, message are required' });
     }
     const now = new Date().toISOString();
-    const receiptCode = nanoid(10);
     const report = {
       id: nanoid(12),
       createdAt: now,
@@ -99,15 +79,15 @@ app.post('/api/reports', requireAuth({ role: 'employee' }), (req, res) => {
       message,
       anonymous: !!anonymous,
       contact: anonymous ? '' : (contact || ''),
-      receiptCode,
-      status: 'new',        // new | in_progress | closed
+      receiptCode: nanoid(10),
+      status: 'new',
       assignee: null,
       managerNotes: [],
       firstResponseAt: null
     };
     reports.push(report);
-    return res.status(201).json({ id: report.id, receiptCode });
-  } catch (e) {
+    return res.status(201).json({ id: report.id, receiptCode: report.receiptCode });
+  } catch {
     return res.status(500).json({ error: 'Create error' });
   }
 });
@@ -122,9 +102,9 @@ app.get('/api/reports/track/:receiptCode', (req, res) => {
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
       category: r.category,
-      severity: r.severity,
+      severity: r.severity
     });
-  } catch (e) {
+  } catch {
     return res.status(500).json({ error: 'Track error' });
   }
 });
@@ -136,20 +116,16 @@ app.get('/api/reports', requireAuth({ role: 'manager' }), (req, res) => {
     if (status) data = data.filter(r => r.status === status);
     if (severity) data = data.filter(r => r.severity === severity);
     if (q) {
-      const term = q.toLowerCase();
+      const term = (q || '').toLowerCase();
       data = data.filter(r =>
         (r.category || '').toLowerCase().includes(term) ||
         (r.message || '').toLowerCase().includes(term) ||
         (r.assignee || '').toLowerCase().includes(term)
       );
     }
-    // Hide contact if anonymous
-    const sanitized = data.map(r => ({
-      ...r,
-      contact: r.anonymous ? '' : r.contact
-    }));
+    const sanitized = data.map(r => ({ ...r, contact: r.anonymous ? '' : r.contact }));
     return res.json(sanitized);
-  } catch (e) {
+  } catch {
     return res.status(500).json({ error: 'List error' });
   }
 });
@@ -160,7 +136,7 @@ app.patch('/api/reports/:id', requireAuth({ role: 'manager' }), (req, res) => {
     if (!r) return res.status(404).json({ error: 'Not found' });
 
     const { status, assignee, managerNote } = req.body || {};
-    if (status && !['new', 'in_progress', 'closed'].includes(status)) {
+    if (status && !['new','in_progress','closed'].includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }
 
@@ -171,13 +147,11 @@ app.patch('/api/reports/:id', requireAuth({ role: 'manager' }), (req, res) => {
       }
       r.status = status;
     }
-    if (managerNote) {
-      r.managerNotes.push({ at: new Date().toISOString(), text: managerNote });
-    }
+    if (managerNote) r.managerNotes.push({ at: new Date().toISOString(), text: managerNote });
     r.updatedAt = new Date().toISOString();
 
     return res.json(r);
-  } catch (e) {
+  } catch {
     return res.status(500).json({ error: 'Update error' });
   }
 });
@@ -189,8 +163,6 @@ app.get('/api/metrics', requireAuth({ role: 'manager' }), (req, res) => {
       acc[s] = reports.filter(r => r.status === s).length;
       return acc;
     }, {});
-
-    // avg time to first response (in hours)
     const responded = reports.filter(r => r.firstResponseAt);
     const avgFirstResponseHrs = responded.length
       ? responded.reduce((sum, r) => {
@@ -198,30 +170,27 @@ app.get('/api/metrics', requireAuth({ role: 'manager' }), (req, res) => {
           return sum + diff;
         }, 0) / responded.length
       : 0;
+    const last7Days = reports.filter(r => dayjs(r.createdAt).isAfter(dayjs().subtract(7, 'day'))).length;
 
-    // last 7 days
-    const last7 = reports.filter(r =>
-      dayjs(r.createdAt).isAfter(dayjs().subtract(7, 'day'))
-    ).length;
-
-    res.json({
+    return res.json({
       total,
       byStatus,
       avgFirstResponseHrs: Number(avgFirstResponseHrs.toFixed(2)),
-      last7Days: last7
+      last7Days
     });
-  } catch (e) {
+  } catch {
     return res.status(500).json({ error: 'Metrics error' });
   }
 });
 
-// ---------- Unified Dashboard (HTML embedded) ----------
-const DASHBOARD_HTML = `<!doctype html>
+// ---------------- HTML ----------------
+const HTML = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Workershild — Unified Dashboard</title>
+<link rel="preload" href="/app.js" as="script">
 <style>
   :root{
     --brand:#0a7abf; --ink:#0b1320; --muted:#64748b;
@@ -265,8 +234,6 @@ const DASHBOARD_HTML = `<!doctype html>
 </header>
 
 <main>
-
-  <!-- Login -->
   <section class="card" id="loginCard">
     <h2 style="margin:0 0 6px 0;text-align:center">Sign in</h2>
     <div class="row" style="justify-content:center">
@@ -288,7 +255,6 @@ const DASHBOARD_HTML = `<!doctype html>
     </div>
   </section>
 
-  <!-- Employee Panel -->
   <section id="employeePanel" class="hide">
     <div class="card topnote" style="max-width:720px">
       <h3 style="margin:0">Employee</h3>
@@ -323,9 +289,7 @@ const DASHBOARD_HTML = `<!doctype html>
           <label>Contact (optional if not anonymous)</label>
           <input id="e_contact" placeholder="phone/email (optional)" />
         </div>
-        <div>
-          <button id="e_submit">Send</button>
-        </div>
+        <div><button id="e_submit">Send</button></div>
       </div>
       <div id="e_submitMsg" class="muted" style="margin-top:8px"></div>
     </div>
@@ -343,7 +307,6 @@ const DASHBOARD_HTML = `<!doctype html>
     </div>
   </section>
 
-  <!-- Manager Panel -->
   <section id="managerPanel" class="hide">
     <div class="card topnote" style="max-width:720px">
       <h3 style="margin:0">Manager</h3>
@@ -391,19 +354,20 @@ const DASHBOARD_HTML = `<!doctype html>
     <div class="card">
       <table id="tbl">
         <thead>
-          <tr>
-            <th>Created</th><th>Status</th><th>Category / Severity</th>
-            <th>Message</th><th>Assignee</th><th>Actions</th>
-          </tr>
+          <tr><th>Created</th><th>Status</th><th>Category / Severity</th><th>Message</th><th>Assignee</th><th>Actions</th></tr>
         </thead>
         <tbody id="tbody"></tbody>
       </table>
     </div>
   </section>
-
 </main>
 
-<script>
+<script src="/app.js" defer></script>
+</body>
+</html>`;
+
+// ---------------- Client JS (served separately to avoid template-string issues) ----------------
+const APP_JS = `
 const API = location.origin + '/api';
 let token = null;
 let userRole = null;
@@ -413,19 +377,16 @@ function hide(id){el(id).classList.add('hide')}
 
 function setUser(email, role){
   userRole = role;
-  el('userBox').innerHTML = \`Signed in as <b>\${email}</b> <span class="pill">\${role}</span>\`;
+  el('userBox').innerHTML = 'Signed in as <b>' + email + '</b> <span class="pill">' + role + '</span>';
   hide('loginCard');
   if(role === 'employee'){ show('employeePanel'); hide('managerPanel'); }
   else if(role === 'manager'){ show('managerPanel'); hide('employeePanel'); refreshManager(); }
 }
 
-// Defensive JSON parse helper to avoid "Unexpected token '<'"
 async function safeJson(resp){
   const text = await resp.text();
   try { return { ok:true, data: JSON.parse(text) }; }
-  catch(e){
-    return { ok:false, errorText: text.slice(0,200) || 'Non-JSON response' };
-  }
+  catch { return { ok:false, errorText: text.slice(0,200) || 'Non-JSON response' }; }
 }
 
 el('loginBtn').onclick = async ()=>{
@@ -433,23 +394,26 @@ el('loginBtn').onclick = async ()=>{
   el('loginMsg').textContent = 'Signing in...';
   try{
     const r = await fetch(API + '/login', {
-      method:'POST', headers:{'Content-Type':'application/json'},
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ email: el('email').value.trim(), password: el('password').value })
     });
     const parsed = await safeJson(r);
     if(!r.ok || !parsed.ok){
       const msg = parsed.ok ? (parsed.data.error || 'Login failed') :
-        'Login failed: server returned non‑JSON (check server & /api prefix).';
+        'Login failed: server returned non-JSON (check server & /api prefix).';
       throw new Error(msg);
     }
     token = parsed.data.token;
     setUser(parsed.data.email, parsed.data.role);
   }catch(e){
-    el('loginMsg').innerHTML = '<span class="err">'+e.message+'</span>';
-  }finally{ el('loginBtn').disabled = false; }
+    el('loginMsg').innerHTML = '<span class="err">' + e.message + '</span>';
+  }finally{
+    el('loginBtn').disabled = false;
+  }
 };
 
-// ============ EMPLOYEE ============
+// Employee submit
 el('e_submit').onclick = async ()=>{
   if(!token || userRole!=='employee'){ alert('Please login as employee.'); return; }
   const anonymous = el('e_anonymous').checked;
@@ -470,44 +434,42 @@ el('e_submit').onclick = async ()=>{
     });
     const parsed = await safeJson(r);
     if(!r.ok || !parsed.ok){
-      throw new Error(parsed.ok ? (parsed.data.error || 'Submit failed') : 'Submit failed: non‑JSON response');
+      throw new Error(parsed.ok ? (parsed.data.error || 'Submit failed') : 'Submit failed: non-JSON response');
     }
-    el('e_submitMsg').innerHTML = \`Received. Your <b>receipt code</b> is <span class="pill">\${parsed.data.receiptCode}</span>. Keep it to track status.\`;
+    el('e_submitMsg').innerHTML = 'Received. Your <b>receipt code</b> is <span class="pill">' + parsed.data.receiptCode + '</span>. Keep it to track status.';
     el('e_message').value=''; el('e_contact').value='';
-  }catch(e){ el('e_submitMsg').innerHTML = '<span class="err">'+e.message+'</span>'; }
+  }catch(e){ el('e_submitMsg').innerHTML = '<span class="err">' + e.message + '</span>'; }
   finally{ el('e_submit').disabled = false; }
 };
 
+// Employee track
 el('e_track').onclick = async ()=>{
   const rc = el('e_receipt').value.trim(); if(!rc) return;
   el('e_trackBox').textContent = 'Looking up...';
   try{
     const r = await fetch(API + '/reports/track/' + encodeURIComponent(rc));
     const parsed = await safeJson(r);
-    if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error || 'Not found') : 'Track failed: non‑JSON'); }
-    const data = parsed.data;
+    if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error || 'Not found') : 'Track failed: non-JSON'); }
+    const d = parsed.data;
     el('e_trackBox').innerHTML =
-      \`<div class="card"><div><b>ID:</b> \${data.id}</div>
-       <div><b>Status:</b> <span class="pill">\${data.status}</span></div>
-       <div class="muted">Created: \${new Date(data.createdAt).toLocaleString()}</div>
-       <div class="muted">Updated: \${new Date(data.updatedAt).toLocaleString()}</div>
-       <div class="muted">Category: \${data.category} • Severity: \${data.severity}</div></div>\`;
-  }catch(e){ el('e_trackBox').innerHTML = '<span class="err">'+e.message+'</span>'; }
+      '<div class="card"><div><b>ID:</b> ' + d.id + '</div>' +
+      '<div><b>Status:</b> <span class="pill">'ated: ' + new Date(d.createdAt).toLocaleString() + '</div>' +
+      '<div class="muted">Updated: ' + new Date(d.updatedAt).toLocaleString() + '</div>' +
+      '<div class="muted">Category: ' + d.category + ' • Severity: ' + d.severity + '</div></div>';
+  }catch(e){ el('e_trackBox').innerHTML = '<span class="err">' + e.message + '</span>'; }
 };
 
-// ============ MANAGER ============
+// Manager
 async function refreshManager(){ await Promise.all([loadMetrics(), loadQueue()]) }
-
 async function loadMetrics(){
   const r = await fetch(API + '/metrics', { headers:{Authorization:'Bearer '+token}});
   const parsed = await safeJson(r);
-  if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error||'metrics error') : 'metrics error: non‑JSON'); }
+  if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error||'metrics error') : 'metrics error: non-JSON'); }
   const m = parsed.data;
   el('k_total').textContent = m.total; el('k_new').textContent = m.byStatus.new;
   el('k_inp').textContent   = m.byStatus.in_progress; el('k_closed').textContent = m.byStatus.closed;
   el('k_avg').textContent   = m.avgFirstResponseHrs;  el('k_last7').textContent = m.last7Days;
 }
-
 async function loadQueue(){
   const p = new URLSearchParams();
   if(el('f_status').value) p.set('status', el('f_status').value);
@@ -515,30 +477,27 @@ async function loadQueue(){
   if(el('f_q').value)      p.set('q', el('f_q').value.trim());
   const r = await fetch(API + '/reports?' + p.toString(), { headers:{Authorization:'Bearer '+token}});
   const parsed = await safeJson(r);
-  if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error||'queue error') : 'queue error: non‑JSON'); }
+  if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error||'queue error') : 'queue error: non-JSON'); }
   renderRows(parsed.data);
 }
-
 function renderRows(rows){
   const tbody = document.getElementById('tbody'); tbody.innerHTML = '';
   for(const r of rows){
     const tr = document.createElement('tr');
-    tr.innerHTML = \`
-      <td>\${new Date(r.createdAt).toLocaleString()}</td>
-      <td><span class="pill">\${r.status}</span></td>
-      <td><div><b>\${r.category}</b></div><div>\${r.severity}</div></td>
-      <td>\${escapeHtml(r.message).slice(0,280)}\${r.message.length>280?'…':''}</td>
-      <td>\${r.assignee || '<span class="pill">unassigned</span>'}</td>
-      <td>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <select data-act="status" data-id="\${r.id}">
-            <option value="">set status…</option><option>new</option><option>in_progress</option><option>closed</option>
-          </select>
-          <input data-act="assignee" data-id="\${r.id}" placeholder="assignee" style="width:140px"/>
-          <input data-act="note" data-id="\${r.id}" placeholder="add note…" style="width:180px"/>
-          <button data-act="save" data-id="\${r.id}">Save</button>
-        </div>
-      </td>\`;
+    tr.innerHTML =
+      '<td>' + new Date(r.createdAt).toLocaleString() + '</td>' +
+      '<td><span class="pill">' + r.status + '</span></td>' +
+      '<td><div><b>' + escapeHtml(r.category) + '</b></div><div>' + escapeHtml(r.severity) + '</div></td>' +
+      '<td>' + escapeHtml(r.message).slice(0,280) + (r.message.length>280?'…':'') + '</td>' +
+      '<td>' + (r.assignee || '<span class="pill">unassigned</span>') + '</td>' +
+      '<td><div style="display:flex;gap:6px;flex-wrap:wrap">' +
+        '<select data-act="status" data-id="'+r.id+'">' +
+          '<option value="">set status…</option><option>new</option><option>in_progress</option><option>closed</option>' +
+        '</select>' +
+        '<input data-act="assignee" data-id="'+r.id+'" placeholder="assignee" style="width:140px"/>' +
+        '<input data-act="note" data-id="'+r.id+'" placeholder="add note…" style="width:180px"/>' +
+        '<button data-act="save" data-id="'+r.id+'">Save</button>' +
+      '</div></td>';
     tbody.appendChild(tr);
   }
   tbody.querySelectorAll('button[data-act="save"]').forEach(btn=>{
@@ -559,13 +518,17 @@ function renderRows(rows){
           body: JSON.stringify(payload)
         });
         const parsed = await safeJson(r);
-        if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error||'update error') : 'update error: non‑JSON'); }
+        if(!r.ok || !parsed.ok){ throw new Error(parsed.ok ? (parsed.data.error||'update error') : 'update error: non-JSON'); }
         await refreshManager();
       }catch(e){ alert(e.message) } finally{ btn.disabled=false }
-    }
-  })
+    };
+  });
 }
-
+function escapeHtml(s){
+  return String(s||'').replace(/[&<>\"']/g, function(ch){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;','\\'':'&#39;'}[ch]);
+  });
+}
 document.getElementById('applyBtn')?.addEventListener('click', loadQueue);
 document.getElementById('clearBtn')?.addEventListener('click', ()=>{
   document.getElementById('f_status').value='';
@@ -573,27 +536,24 @@ document.getElementById('clearBtn')?.addEventListener('click', ()=>{
   document.getElementById('f_q').value='';
   loadQueue();
 });
+`;
 
-function escapeHtml(s){ return s.replace(/[&<>\"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[m])) }
-</script>
-</body>
-</html>`;
-
-// Root route serves the dashboard
+// ---------------- Routes ----------------
 app.get('/', (req, res) => {
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(DASHBOARD_HTML);
+  res.type('html').send(HTML);
 });
 
-// Fallback for any other non-API GET -> serve the app (handy on static hosts)
-app.get(/^\/(?!api).*/, (req, res) => {
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(DASHBOARD_HTML);
+app.get('/app.js', (req, res) => {
+  res.type('application/javascript').send(APP_JS);
 });
 
-// ---------- Start ----------
+// Fallback: any non-API path returns the app (handy on some hosts)
+app.get(/^\/(?!api).+/, (req, res) => {
+  res.type('html').send(HTML);
+});
+
+// ---------------- Start ----------------
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
-  console.log(`Workershild (one-file) on http://localhost:${PORT}`);
-  console.log(`Employee/Manager unified dashboard served at /`);
+  console.log(`Workershild (one-file, stable) on http://localhost:${PORT}`);
 });
